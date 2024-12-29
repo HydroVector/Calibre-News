@@ -1,9 +1,10 @@
 name: Calibre News Delivery
+run-name: 'Calibre News Delivery: ${{ github.ref_name }}'
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * *'  # Runs every day at midnight
+  # push:
+  #   branches: ['master']
 
 permissions:
   contents: read
@@ -16,24 +17,22 @@ jobs:
       output: converted_ebooks
       publisher: bookfere.com
       author: Calibre News Delivery
+      relay: ${{ secrets.SMTP }}
+      port: ${{ secrets.PORT }}
+      encrypt: ${{ secrets.ENCRYPT }}
+      secret: ${{ secrets.SECRET }}
+      from: ${{ secrets.FROM }}
+      to: ${{ secrets.TO }}
       ext: ${{ secrets.FORMAT || 'epub' }}
       size: ${{ secrets.SIZE || 25 }}
-      DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
-      CLIENT_ID: ${{ secrets.CLIENT_ID }}
-      CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-      REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
-
     steps:
       - name: Checking Variable
         run: |
           declare -A variables
           declare -a absences
           variables=(
-            'DRIVE_FOLDER_ID' "$DRIVE_FOLDER_ID" 
-            'CLIENT_ID' "$CLIENT_ID" 
-            'CLIENT_SECRET' "$CLIENT_SECRET" 
-            'REFRESH_TOKEN' "$REFRESH_TOKEN"
-          )
+            'SMTP' "$relay" 'PORT' "$port" 'ENCRYPT' "$encrypt"
+            'SECRET' "$secret" 'FROM' "$from" 'TO' "$to")
           for key in ${!variables[@]}; do
             variable=${variables[$key]}
             [ -n "$variable" ] || absences+=($key)
@@ -42,13 +41,11 @@ jobs:
             variable_keys=$(echo ${absences[@]/%/,})
             echo "Missing variable(s): ${variable_keys/%,/}"; exit 1
           fi
-
       - name: Set up Python
         if: ${{ success() }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install Calibre
         if: ${{ success() }}
         run: |
@@ -56,11 +53,9 @@ jobs:
           sudo apt-get install libegl1 libopengl0 libxcb-cursor0
           url=https://download.calibre-ebook.com/linux-installer.sh
           sudo -v && wget -nv -O- $url | sudo sh /dev/stdin
-
       - name: Retrieving Recipe
         if: ${{ success() }}
         uses: actions/checkout@v4
-
       - name: Checking Recipe
         if: ${{ success() }}
         run: |
@@ -97,7 +92,6 @@ jobs:
           if [ $count -eq 0 ]; then
             echo 'No recipe needs processing'; exit 1
           fi
-
       - name: Converting Ebook
         if: ${{ success() }}
         run: |
@@ -127,21 +121,7 @@ jobs:
           if [ $count -eq 0 ]; then
             echo 'No ebook needs send'; exit 1
           fi
-
-      - name: Install gdrive
-        if: ${{ success() }}
-        run: |
-          sudo apt-get install -y wget
-          wget -qO- 'https://raw.githubusercontent.com/prasmussen/gdrive/master/scripts/gdrive' | sudo tee /usr/local/bin/gdrive > /dev/null
-          sudo chmod +x /usr/local/bin/gdrive
-
-      - name: Authenticate gdrive
-        if: ${{ success() }}
-        run: |
-          echo $CLIENT_ID $CLIENT_SECRET > client_secrets.json
-          gdrive about --refresh-token $REFRESH_TOKEN
-
-      - name: Upload to Google Drive
+      - name: Sending Ebook
         if: ${{ success() }}
         run: |
           while read -d '' ebook_path; do
@@ -152,11 +132,12 @@ jobs:
               echo "Size exceeds the limitation: $filename (${file_size}MB)"
               continue
             fi
-            echo "Uploading: \"$filename\""
-            gdrive upload --parent $DRIVE_FOLDER_ID "$ebook_path"
+            echo "Sending: \"$filename\""
+            calibre-smtp -a "$ebook_path" -r "$relay" --port="$port" \
+              -e "${encrypt^^}" -u "$from" -p "$secret" -s "$title" \
+              "$from" "$to" "Deliver \"${title}\""
           done < <(find "$output" -type f -name "*.${ext,,}" -print0)
           echo "All jobs done"
-
       - name: Storing Ebook
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
